@@ -1,104 +1,134 @@
+
 name: Python Microservice CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-and-test:
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-24.04
+
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.10", "3.11"]
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Show Python version
+        run: python --version
 
-    - name: Run tests with PyTest, generate coverage and HTML report
-      run: |
-        pip install pytest-html # Ensure pytest-html is installed
-        pytest --cov=app --cov-report=xml --cov-report=term-missing \
-               --html=pytest-report.html --self-contained-html \
-               --junitxml=junit-report.xml \
-               tests/
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest pytest-cov pytest-html
 
-    - name: Upload coverage reports to Codecov
-      uses: codecov/codecov-action@v4
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }} # Required for private repos, but good practice
-        files: ./coverage.xml
-        fail_ci_if_error: true
-        verbose: true
+      - name: Run tests and generate reports
+        run: |
+          mkdir -p test-results
 
-    - name: Archive Pytest HTML Report
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: pytest-html-report-${{ matrix.python-version }}
-        path: pytest-report.html
+          python -m pytest tests/ -v \
+            --cov=app \
+            --cov-report=xml:test-results/coverage.xml \
+            --cov-report=term-missing \
+            --junitxml=test-results/junit-report.xml \
+            --html=test-results/pytest-report.html \
+            --self-contained-html
 
-    - name: Archive JUnit XML Test Results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: junit-xml-results-${{ matrix.python-version }}
-        path: junit-report.xml
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-reports-${{ matrix.python-version }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
 
-    - name: Generate Test Report Summary
-      if: always()
-      run: |
-        echo "### Pytest Report Summary (${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        # Basic summary, assuming junit-report.xml exists from pytest run
-        if [ -f junit-report.xml ]; then
-          TOTAL_TESTS=$(grep -oP 'tests="\K[0-9]+' junit-report.xml | awk '{s+=$1} END {print s}')
-          FAILED_TESTS=$(grep -oP 'failures="\K[0-9]+' junit-report.xml | awk '{s+=$1} END {print s}')
-          ERROR_TESTS=$(grep -oP 'errors="\K[0-9]+' junit-report.xml | awk '{s+=$1} END {print s}')
-          SKIPPED_TESTS=$(grep -oP 'skipped="\K[0-9]+' junit-report.xml | awk '{s+=$1} END {print s}')
-          PASSED_TESTS=$((TOTAL_TESTS - FAILED_TESTS - ERROR_TESTS - SKIPPED_TESTS))
-          echo "- **Total Tests:** $TOTAL_TESTS" >> $GITHUB_STEP_SUMMARY
-          echo "- **Passed:** $PASSED_TESTS" >> $GITHUB_STEP_SUMMARY
-          echo "- **Failed:** $FAILED_TESTS" >> $GITHUB_STEP_SUMMARY
-          echo "- **Errors:** $ERROR_TESTS" >> $GITHUB_STEP_SUMMARY
-          echo "- **Skipped:** $SKIPPED_TESTS" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "junit-report.xml not found. Cannot generate detailed summary." >> $GITHUB_STEP_SUMMARY
-        fi
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "A detailed HTML report and JUnit XML results have been uploaded as artifacts." >> $GITHUB_STEP_SUMMARY
-        echo "Coverage report uploaded to Codecov." >> $GITHUB_STEP_SUMMARY
+      - name: Upload coverage to Codecov
+        if: ${{ env.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@v6
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          files: ./test-results/coverage.xml
+          fail_ci_if_error: false
+          verbose: true
 
-    # Slack Notification - Placeholder - Will require SLACK_WEBHOOK_URL secret
-    # - name: Send Slack Notification on Failure
-    #   if: failure()
-    #   uses: rtCamp/action-slack-notify@v2
-    #   env:
-    #     SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
-    #     SLACK_MESSAGE: 'Build Failed: ${{ github.workflow }} - ${{ github.repository }}'
-    #     SLACK_TITLE: 'Build Failed on ${{ github.ref }}'
-    #     SLACK_COLOR: 'danger'
+      - name: Generate test summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## Python ${{ matrix.python-version }} Test Results" >> "$GITHUB_STEP_SUMMARY"
 
-    # - name: Notify Slack on Success
-    #   if: success()
-    #   uses: rtCamp/action-slack-notify@v2
-    #   env:
-    #     SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
-    #     SLACK_MESSAGE: 'Build Successful: ${{ github.workflow }} - ${{ github.repository }}'
-    #     SLACK_TITLE: 'Build Successful on ${{ github.ref }}'
-    #     SLACK_COLOR: 'good'
-      env:
-        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }} # Pass the token to the step
-        CI: true # Recommended by Codecov
+          if [ -f test-results/junit-report.xml ]; then
+            python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("test-results/junit-report.xml").getroot()
+
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+
+          total = sum(int(s.get("tests", 0)) for s in suites)
+          failed = sum(int(s.get("failures", 0)) for s in suites)
+          errors = sum(int(s.get("errors", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          passed = total - failed - errors - skipped
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(f"\n- Total: {total}\n")
+              f.write(f"- Passed: {passed}\n")
+              f.write(f"- Failed: {failed}\n")
+              f.write(f"- Errors: {errors}\n")
+              f.write(f"- Skipped: {skipped}\n")
+          PY
+          else
+            echo "Test report not available." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  docker-build-and-test:
+    name: Docker Build and Test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build Docker image
+        run: |
+          docker build -t python-microservice-cicd:latest .
+
+      - name: Run unit tests in Docker
+        run: |
+          docker run --rm \
+            python-microservice-cicd:latest \
+            python -m pytest tests/ -v
+
+      - name: Verify Docker image
+        run: |
+          docker image inspect python-microservice-cicd:latest
+
+      - name: Generate Docker summary
+        if: success()
+        run: |
+          echo "## Docker CI Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Docker image built successfully" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Unit tests passed inside Docker" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Docker image verified" >> "$GITHUB_STEP_SUMMARY"
