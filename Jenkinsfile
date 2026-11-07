@@ -1,6 +1,4 @@
-// Jenkins Declarative Pipeline
-pipeline {
-    // Define a global agent or per-stage agent. Using a Docker agent for build/test stages.
+
 // Jenkins Declarative Pipeline
 pipeline {
     agent any // Use 'agent any' if your Jenkins master (built from jenkins/Dockerfile-jenkins) has Docker CLI.
